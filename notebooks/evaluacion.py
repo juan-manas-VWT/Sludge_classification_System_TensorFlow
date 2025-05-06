@@ -25,7 +25,7 @@ import itertools
 # Definir rutas
 VALIDATION_DIR = 'data/validation/'
 TEST_DIR = 'data/test/'  # Nuevo
-FINE_TUNED_DIR = 'models/fine_tuned/'
+FINE_TUNED_DIR = '.models/fine_tuned/'
 RESULTS_DIR = 'models/evaluation_results/'
 
 # Crear directorio para resultados si no existe

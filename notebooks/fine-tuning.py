@@ -13,6 +13,9 @@ from tensorflow.keras.optimizers import Adam
 from sklearn.utils.class_weight import compute_class_weight
 import datetime
 import json
+import cv2
+
+
 
 # # Configuración inicial
 # plt.style.use('seaborn-whitegrid')
@@ -67,44 +70,217 @@ os.makedirs(FINE_TUNED_DIR, exist_ok=True)
                                             #     validation_steps = validation_samples // BATCH_SIZE
 #                                                 class_indices = {'normal':1, 'anomaly': 0}
 
-# 3.2 Preparar generadores de datos
-# ---------------------------------------------
-# Definir parámetros directamente en el script
-IMG_SIZE = (448, 640)
-BATCH_SIZE = 16 # Reducir de 32 al usar resoluciones mayores
+# New img size after cropping to follow the rectangular shape
+IMG_SIZE = (186, 400)  # heith x width 
+# IMG_SIZE = (372, 800)  # The double
 
-# Calcular parámetros basados en el directorio
+
+
+# 3.2 Prepare data generators
+# ---------------------------------------------
+def preprocess_image(img):
+    """
+    Crops a specific region of the image and resizes it to the desired size.
+    If the image is too small, the crop is adapted proportionally.
+    """
+    # Obtener dimensiones de la imagen
+    img_height, img_width = img.shape[:2]
+    
+    # Coordenadas originales para el recorte (para imágenes de tamaño completo)
+    target_start_x = 943
+    target_start_y = 861
+    target_width = 3569
+    target_height = 1651
+    
+    # Calcular la proporción de la imagen actual respecto a un tamaño de referencia
+    # (asumiendo que las coordenadas originales son para imágenes de 4512x2512)
+    reference_width = 4512
+    reference_height = 2512
+    
+    width_ratio = img_width / reference_width
+    height_ratio = img_height / reference_height
+    
+    # Ajustar las coordenadas según la proporción
+    start_x = int(target_start_x * width_ratio)
+    start_y = int(target_start_y * height_ratio)
+    width = int(target_width * width_ratio)
+    height = int(target_height * height_ratio)
+    
+    # Asegurarse de que las coordenadas estén dentro de los límites de la imagen
+    start_x = max(0, min(start_x, img_width - 1))
+    start_y = max(0, min(start_y, img_height - 1))
+    width = min(width, img_width - start_x)
+    height = min(height, img_height - start_y)
+    
+    # Si el área de recorte es demasiado pequeña, usar la imagen completa
+    if width < 50 or height < 50:
+        print(f"Imagen demasiado pequeña para recortar: {img_width}x{img_height}")
+        return cv2.resize(img, (IMG_SIZE[1], IMG_SIZE[0]))
+    
+    # Realizar el recorte
+    end_x = start_x + width
+    end_y = start_y + height
+    cropped_img = img[start_y:end_y, start_x:end_x]
+    
+    # Redimensionar la imagen recortada
+    return cv2.resize(cropped_img, (IMG_SIZE[1], IMG_SIZE[0]))
+
+
+# Update the visualization function to show the exact crop
+def visualize_preprocessing(image_path, save_path=None):
+    """
+    Visualize how the preprocessing affects the input images using exact crop coordinates.
+    
+    Args:
+        image_path: Path to a sample image
+        save_path: Optional path to save the visualization
+    """
+    # Read the original image
+    original_img = cv2.imread(image_path)
+    if original_img is None:
+        print(f"Could not read image at {image_path}")
+        return None, None, None, None
+        
+    original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
+    
+    # Use exact coordinates for cropping
+    start_x = 943
+    start_y = 861
+    width = 3569
+    height = 1651
+    
+    # Ensure coordinates are within image boundaries
+    img_height, img_width = original_img.shape[:2]
+    
+    # Print original image dimensions for reference
+    print(f"Original image dimensions: {img_width}x{img_height}")
+    
+    # Adjust if necessary to prevent out-of-bounds errors
+    start_x = min(start_x, img_width - 1)
+    start_y = min(start_y, img_height - 1)
+    width = min(width, img_width - start_x)
+    height = min(height, img_height - start_y)
+    
+    end_x = start_x + width
+    end_y = start_y + height
+    
+    # Create a copy of the original image with the ROI highlighted
+    highlighted_img = original_img.copy()
+    cv2.rectangle(highlighted_img, (start_x, start_y), (end_x, end_y), (255, 0, 0), 5)
+    
+    # Crop the image
+    cropped_img = original_img[start_y:end_y, start_x:end_x]
+    
+    # Resize the cropped image to model input size
+    resized_img = cv2.resize(cropped_img, (IMG_SIZE[1], IMG_SIZE[0]))
+    
+    # Create the figure for visualization
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    
+    # Plot each step
+    axes[0].imshow(original_img)
+    axes[0].set_title('Original Image')
+    axes[0].axis('off')
+    
+    axes[1].imshow(highlighted_img)
+    axes[1].set_title(f'Region of Interest\n({start_x},{start_y}, {width}x{height})')
+    axes[1].axis('off')
+    
+    axes[2].imshow(cropped_img)
+    axes[2].set_title('Cropped Image')
+    axes[2].axis('off')
+    
+    axes[3].imshow(resized_img)
+    axes[3].set_title(f'Resized to {IMG_SIZE[0]}x{IMG_SIZE[1]}')
+    axes[3].axis('off')
+    
+    plt.tight_layout()
+    
+    # if save_path:
+    #     plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    plt.show()
+    
+    return original_img, highlighted_img, cropped_img, resized_img
+
+# Test the preprocessing function with a sample image
+
+def test_with_sample_image():
+    """
+    Test the preprocessing with a sample image to verify the crop coordinates.
+    """
+    # Find a sample image
+    sample_paths = []
+    for root, _, files in os.walk(TRAIN_DIR):
+        for file in files:
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                sample_paths.append(os.path.join(root, file))
+                break
+        if sample_paths:
+            break
+    
+    if not sample_paths:
+        print("No sample images found for testing.")
+        return
+    
+    sample_path = sample_paths[0]
+    print(f"Testing with sample image: {sample_path}")
+    
+    # Visualize the preprocessing
+    visualize_preprocessing(sample_path, 'crop_test.png')
+    
+    print("Test complete.")
+
+# Run the test
+test_with_sample_image()
+
+
+
+
+# Calculate parameters based on directory size
 train_samples = sum([len(files) for _, _, files in os.walk(TRAIN_DIR)])
 validation_samples = sum([len(files) for _, _, files in os.walk(VALIDATION_DIR)])
+BATCH_SIZE = 16  # Reduced batch size for higher resolution
 steps_per_epoch = train_samples // BATCH_SIZE
 validation_steps = validation_samples // BATCH_SIZE
-# MODIFICACIÓN IMPORTANTE: Añadir rescale=1./255 para normalizar aquí
-# Generador para entrenamiento con aumento de datos y normalización
+
+# Data generator for training with data augmentation
 train_datagen = ImageDataGenerator(
-    rescale=1./255,             # Normalización aquí
-    rotation_range=20,           
-    width_shift_range=0.1,       # Aumento de datos
-    height_shift_range=0.1,      # Aumento de datos
-    shear_range=0.2,             # Aumento de datos
-    zoom_range=0.2,              # Aumento de datos
-    horizontal_flip=True,        # Aumento de datos
-    ##########
-    # brightness_range=[0.8, 1.2],  # Variaciones de brillo
-    # channel_shift_range=0.1,      # Cambios en canales de color
-    ##########
-    fill_mode='nearest'
+    preprocessing_function=preprocess_image,  # Custom preprocessing applied first
+    rescale=1./255,    #Normalize here
+    rotation_range=5,           # Reduced rotation for sludge images
+    width_shift_range=0.1,       # Horizontal shift
+    height_shift_range=0.1,      # Vertical shift
+    # shear_range=0.1,             # Reduced shear
+    zoom_range=0.15,             # Zoom range
+    horizontal_flip=True,        # Horizontal flip
+    fill_mode='nearest'          # Fill mode for augmentation
 )
 
-# Generador para validación con normalización
+# # Data generator for training with data augmentation
+# train_datagen = ImageDataGenerator(
+#     preprocessing_function=preprocess_image,  # Custom preprocessing applied first
+#     rescale=1./255,    #Normalize here
+#     rotation_range=15,           # Reduced rotation for sludge images
+#     width_shift_range=0.1,       # Horizontal shift
+#     height_shift_range=0.1,      # Vertical shift
+#     shear_range=0.1,             # Reduced shear
+#     zoom_range=0.15,             # Zoom range
+#     horizontal_flip=True,        # Horizontal flip
+#     fill_mode='nearest'          # Fill mode for augmentation
+# )
+
+# Data generator for validation (only preprocessing, no augmentation)
 val_datagen = ImageDataGenerator(
-    rescale=1./255              # Normalización aquí
+    preprocessing_function=preprocess_image, # Only apply the custom preprocessing
+    rescale=1./255,    #Normalize here
+
 )
 
-# Preparar los generadores de flujo de datos
-# MODIFICACIÓN IMPORTANTE: Añadir target_size=IMG_SIZE para hacer el resize aquí
+# Prepare the data generators with the specified target size
 train_generator = train_datagen.flow_from_directory(
     TRAIN_DIR,
-    target_size=IMG_SIZE,       # Resize aquí
+    target_size=IMG_SIZE,  # This will be applied after preprocessing
     batch_size=BATCH_SIZE,
     class_mode='binary',
     shuffle=True
@@ -112,39 +288,51 @@ train_generator = train_datagen.flow_from_directory(
 
 validation_generator = val_datagen.flow_from_directory(
     VALIDATION_DIR,
-    target_size=IMG_SIZE,       # Resize aquí
+    target_size=IMG_SIZE,  # This will be applied after preprocessing
     batch_size=BATCH_SIZE,
     class_mode='binary',
     shuffle=False
 )
-# Obtener índices de clase del generador
+
+# Get class indices from the generator
 class_indices = train_generator.class_indices
-print(f"Índices de clase: {class_indices}")
+print(f"Class indices: {class_indices}")
 
-# NUEVO: Verificar el rango de valores de las imágenes
+# Verify preprocessing and normalization
+print("Verifying preprocessing:")
 batch_x, batch_y = next(train_generator)
-print(f"Verificación de normalización:")
-print(f"Rango de valores en batch: [{batch_x.min()}, {batch_x.max()}]")  # Debe estar cerca de [0, 1]
-print(f"Forma del batch: {batch_x.shape}")  # Debe ser (BATCH_SIZE, HEIGHT, WIDTH, 3)  (32, 224, 224, 3)
+print(f"Batch shape: {batch_x.shape}")  # Should be (BATCH_SIZE, HEIGHT, WIDTH, 3)
+print(f"Value range: [{batch_x.min()}, {batch_x.max()}]")  # Should be close to [0, 1]
 
-# NUEVO: Calcular class weights para manejar desbalance
+# Display a few processed training images to verify preprocessing
+plt.figure(figsize=(15, 5))
+for i in range(min(5, batch_x.shape[0])):
+    plt.subplot(1, 5, i+1)
+    plt.imshow(batch_x[i])
+    plt.title(f"Class: {int(batch_y[i])}")
+    plt.axis('off')
+plt.suptitle("Processed Training Images")
+plt.tight_layout()
+plt.show()
+
+# Calculate class weights to handle imbalance
 class_counts = [0, 0]
 for i in range(len(train_generator.classes)):
     class_counts[train_generator.classes[i]] += 1
 
-print(f"Distribución de clases en entrenamiento: {class_counts}")  #para saber el total de clases
+print(f"Class distribution in training set: {class_counts}")
 
-# Calcular pesos inversamente proporcionales a la frecuencia
+# Calculate weights inversely proportional to class frequency
 if class_counts[0] != class_counts[1]:
     total = sum(class_counts)
     class_weight = {
         0: total / (2 * class_counts[0]),
         1: total / (2 * class_counts[1])
     }
-    print(f"Class weights calculados: {class_weight}")
+    print(f"Calculated class weights: {class_weight}")
 else:
     class_weight = None
-    print("Las clases están balanceadas. No se necesitan class weights.")
+    print("Classes are balanced. No class weights needed.")
 
 # # # 3.3 Definir y construir el modelo base
 # # # ---------------------------------------------
@@ -219,10 +407,90 @@ def build_model(base_model_name='EfficientNetB0', input_shape=(224, 224, 3),
     
     return model
 
+
+
+# Analizador detallado de las imágenes procesadas
+def analyze_batch_images(batch_x, batch_y, num_samples=5):
+    """
+    Analiza detalladamente las imágenes procesadas para diagnosticar
+    problemas de visualización.
+    """
+    print("\n--- ANÁLISIS DETALLADO DE IMÁGENES ---")
+    
+    # Estadísticas globales del batch
+    print(f"Shape del batch: {batch_x.shape}")
+    print(f"Dtype del batch: {batch_x.dtype}")
+    print(f"Rango global: [{batch_x.min():.4f}, {batch_x.max():.4f}]")
+    
+    # Crear figura para visualización
+    plt.figure(figsize=(18, 12))
+    
+    for i in range(min(num_samples, batch_x.shape[0])):
+        img = batch_x[i]
+        label = batch_y[i]
+        
+        # Estadísticas de la imagen
+        print(f"\nImagen {i+1} (Clase {int(label)}):")
+        print(f"  Rango: [{img.min():.4f}, {img.max():.4f}]")
+        print(f"  Media: {img.mean():.4f}")
+        print(f"  Desviación estándar: {img.std():.4f}")
+        
+        # Histograma de valores
+        values_flat = img.reshape(-1)
+        
+        # Visualización original
+        plt.subplot(num_samples, 4, i*4 + 1)
+        plt.imshow(img)
+        plt.title(f"Original (Clase {int(label)})")
+        plt.axis('off')
+        
+        # Histograma
+        plt.subplot(num_samples, 4, i*4 + 2)
+        plt.hist(values_flat, bins=50, color='blue', alpha=0.7)
+        plt.title(f"Histograma\nRango: [{img.min():.2f}, {img.max():.2f}]")
+        plt.grid(True, alpha=0.3)
+        
+        # Visualización con contraste ajustado
+        plt.subplot(num_samples, 4, i*4 + 3)
+        plt.imshow(img, vmin=0.0, vmax=0.5)  # Ajustar máximo para mejor visualización
+        plt.title("Contraste ajustado\nvmax=0.5")
+        plt.axis('off')
+        
+        # Versión CLAHE para comparación
+        img_uint8 = (img * 255).astype(np.uint8)
+        lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        lab = cv2.merge((l, a, b))
+        enhanced_img = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        plt.subplot(num_samples, 4, i*4 + 4)
+        plt.imshow(enhanced_img)
+        plt.title("CLAHE aplicado")
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+# Obtener un nuevo batch para analizar
+batch_x, batch_y = next(train_generator)
+
+# Ejecutar el análisis detallado
+analyze_batch_images(batch_x, batch_y)
+
+
+
+#########################################################################################################################################
+
+
+
+
 #AQUI LO LLAMAAS
 # Construir el modelo con MobileNetV2 como base
-print("Construyendo modelo base con EfficientNetB2...")
-model = build_model(base_model_name='EfficientNetB2', 
+print("Construyendo modelo base con MobileNetV3Small...")
+model = build_model(base_model_name='MobileNetV3Small', 
                    input_shape=IMG_SIZE + (3,),
                    trainable_base=False)
 
